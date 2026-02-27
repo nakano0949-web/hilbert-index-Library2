@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>HilbertIndex3D Visualization</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #000; }
+  </style>
+</head>
+<body>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r152/three.min.js"></script>
+
+<script>
+// ------------------------------------------------------------
+// 3D Hilbert curve fast implementation (bitwise optimized)
+// ------------------------------------------------------------
+function hilbert3D_fast(x, y, z, order) {
+  let h = 0;
+  let rotation = 0;
+
+  const rotLUT = [
+    [0,7,3,4,1,6,2,5],
+    [1,6,2,5,0,7,3,4],
+    [3,4,0,7,2,5,1,6],
+    [2,5,1,6,3,4,0,7],
+    [4,3,7,0,5,2,6,1],
+    [5,2,6,1,4,3,7,0],
+    [7,0,4,3,6,1,5,2],
+    [6,1,5,2,7,0,4,3]
+  ];
+
+  for (let i = order - 1; i >= 0; i--) {
+    const xi = (x >> i) & 1;
+    const yi = (y >> i) & 1;
+    const zi = (z >> i) & 1;
+
+    let idx = (xi << 2) | (yi << 1) | zi;
+    idx = rotLUT[rotation][idx];
+
+    h = (h << 3) | idx;
+    rotation = idx;
+  }
+  return h;
+}
+
+// ------------------------------------------------------------
+// HilbertIndex3D (fast version)
+// ------------------------------------------------------------
+class HilbertIndex3D {
+  constructor(order = 8) {
+    this.order = order;
+    this.points = [];
+  }
+
+  insert(x, y, z, value) {
+    const h = hilbert3D_fast(x, y, z, this.order);
+    this.points.push({ h, x, y, z, value });
+  }
+
+  build() {
+    this.points.sort((a, b) => a.h - b.h);
+  }
+
+  range(box) {
+    const { x0, y0, z0, x1, y1, z1 } = box;
+    const results = [];
+    for (const p of this.points) {
+      if (
+        p.x >= x0 && p.x <= x1 &&
+        p.y >= y0 && p.y <= y1 &&
+        p.z >= z0 && p.z <= z1
+      ) {
+        results.push(p);
+      }
+    }
+    return results;
+  }
+
+  knn(qx, qy, qz, k) {
+    const qh = hilbert3D_fast(qx, qy, qz, this.order);
+
+    let left = 0;
+    let right = this.points.length;
+    while (left < right) {
+      const mid = (left + right) >> 1;
+      if (this.points[mid].h < qh) left = mid + 1;
+      else right = mid;
+    }
+
+    let L = left - 1;
+    let R = left;
+
+    const result = [];
+
+    function dist2(p) {
+      const dx = p.x - qx;
+      const dy = p.y - qy;
+      const dz = p.z - qz;
+      return dx*dx + dy*dy + dz*dz;
+    }
+
+    while (result.length < k && (L >= 0 || R < this.points.length)) {
+      let chooseLeft = false;
+
+      if (L >= 0 && R < this.points.length) {
+        chooseLeft = dist2(this.points[L]) < dist2(this.points[R]);
+      } else if (L >= 0) {
+        chooseLeft = true;
+      }
+
+      if (chooseLeft) result.push(this.points[L--]);
+      else result.push(this.points[R++]);
+    }
+
+    result.sort((a, b) => dist2(a) - dist2(b));
+    return result;
+  }
+}
+
+// ------------------------------------------------------------
+// Three.js Visualization
+// ------------------------------------------------------------
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 2000);
+camera.position.set(120, 120, 160);
+
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// ------------------------------------------------------------
+// Create HilbertIndex3D and points
+// ------------------------------------------------------------
+const idx = new HilbertIndex3D(6); // 64^3
+
+const N = 20000;
+const positions = new Float32Array(N * 3);
+
+for (let i = 0; i < N; i++) {
+  const x = Math.random() * 64;
+  const y = Math.random() * 64;
+  const z = Math.random() * 64;
+
+  idx.insert(x|0, y|0, z|0, i);
+
+  positions[i*3+0] = x;
+  positions[i*3+1] = y;
+  positions[i*3+2] = z;
+}
+
+idx.build();
+
+// 全点（白）
+const geom = new THREE.BufferGeometry();
+geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+scene.add(new THREE.Points(geom, new THREE.PointsMaterial({ color:0xffffff, size:1.5 })));
+
+// ------------------------------------------------------------
+// Range box
+// ------------------------------------------------------------
+const box = { x0:10, y0:10, z0:10, x1:30, y1:30, z1:30 };
+
+const boxGeom = new THREE.BoxGeometry(box.x1-box.x0, box.y1-box.y0, box.z1-box.z0);
+const boxMesh = new THREE.Mesh(boxGeom, new THREE.MeshBasicMaterial({ color:0x00aaff, wireframe:true }));
+boxMesh.position.set((box.x0+box.x1)/2, (box.y0+box.y1)/2, (box.z0+box.z1)/2);
+scene.add(boxMesh);
+
+// Range hits（青）
+const hits = idx.range(box);
+const hitPos = new Float32Array(hits.length * 3);
+hits.forEach((p,i)=>{
+  hitPos[i*3+0]=p.x;
+  hitPos[i*3+1]=p.y;
+  hitPos[i*3+2]=p.z;
+});
+const hitGeom = new THREE.BufferGeometry();
+hitGeom.setAttribute("position", new THREE.BufferAttribute(hitPos,3));
+scene.add(new THREE.Points(hitGeom, new THREE.PointsMaterial({ color:0x00aaff, size:3 })));
+
+// ------------------------------------------------------------
+// kNN（赤）
+// ------------------------------------------------------------
+const q = { x:20, y:20, z:20 };
+const knn = idx.knn(q.x, q.y, q.z, 20);
+
+const knnPos = new Float32Array(knn.length * 3);
+knn.forEach((p,i)=>{
+  knnPos[i*3+0]=p.x;
+  knnPos[i*3+1]=p.y;
+  knnPos[i*3+2]=p.z;
+});
+const knnGeom = new THREE.BufferGeometry();
+knnGeom.setAttribute("position", new THREE.BufferAttribute(knnPos,3));
+scene.add(new THREE.Points(knnGeom, new THREE.PointsMaterial({ color:0xff4444, size:4 })));
+
+// 中心点（黄）
+const centerGeom = new THREE.BufferGeometry();
+centerGeom.setAttribute("position", new THREE.BufferAttribute(new Float32Array([q.x,q.y,q.z]),3));
+scene.add(new THREE.Points(centerGeom, new THREE.PointsMaterial({ color:0xffff00, size:6 })));
+
+// ------------------------------------------------------------
+// Animation
+// ------------------------------------------------------------
+function animate() {
+  requestAnimationFrame(animate);
+  scene.rotation.y += 0.002;
+  renderer.render(scene, camera);
+}
+animate();
+
+</script>
+
+</body>
+</html>
