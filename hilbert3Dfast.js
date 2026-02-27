@@ -29,3 +29,6 @@ function hilbert3D_fast(x, y, z, order) {
 
   return h;
 }
+export const hilbert = {
+  index: (x, y, z, order = 8) => hilbert3D_fast(x, y, z, order)
+};
